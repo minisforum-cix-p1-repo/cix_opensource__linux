@@ -335,6 +335,7 @@ enum trilin_dptx_state {
 	DP_STATE_DISCONNECT_NOTIFIED = BIT(5),
 	DP_STATE_ENABLED = BIT(6),
 	DP_STATE_SUSPENDED = BIT(7),
+	DP_STATE_INIT_TRAIN = BIT(8),
 };
 
 struct trilin_dp_panel {

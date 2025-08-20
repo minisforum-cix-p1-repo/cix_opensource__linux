@@ -1652,6 +1652,7 @@ static int trilin_dp_core_on(struct trilin_dp *dp, bool shallow)
 	}
 
 	dp->state |= DP_STATE_READY;
+
 	/*Fixme: stream 0 and 1; should follow active_nums..*/
 	if (dp->mst.mst_active)
 		enable_sources = 0x3;
@@ -1709,7 +1710,7 @@ static int trilin_dp_core_on(struct trilin_dp *dp, bool shallow)
 			rc = 0;
 		}
 	}
-
+	dp->state |= DP_STATE_INIT_TRAIN;
 	return rc;
 end3:
 	if (phy->phy_ops)
@@ -1928,40 +1929,10 @@ static int trilin_dp_clear_info(struct trilin_dp *dp,
  * host state manager
  *
  */
-int trilin_dp_host_init(struct trilin_dp *dp)
+static void trilin_dp_register_phy(struct trilin_dp *dp)
 {
-	int rc = 0;
 	struct trilin_phy_t *phy = &dp->phy;
 	struct fwnode_handle *fwnode;
-
-	DP_INFO("enter\n");
-	if (dp->state & DP_STATE_INITIALIZED) {
-		DP_DEBUG("[already initialized]");
-		return rc;
-	}
-
-	trilin_dp_core_power_init(dp);
-
-	if (!IS_ERR(dp->reset)) {
-		reset_control_assert(dp->reset);
-		usleep_range(10, 20);
-		reset_control_deassert(dp->reset);
-	}
-
-	if (!IS_ERR(dp->phy_reset)) {
-		reset_control_assert(dp->phy_reset);
-		usleep_range(10, 20);
-		reset_control_deassert(dp->phy_reset);
-	}
-
-	usleep_range(10, 20);
-
-	/*inital hardware*/
-	trilin_dp_write(dp, TRILIN_DPTX_FORCE_SCRAMBLER_RESET, 1);
-	trilin_dp_write(dp, TRILIN_DPTX_TRANSMITTER_ENABLE, 0);
-	trilin_dp_write(dp, TRILIN_DPTX_INTERRUPT_MASK,
-			TRILIN_DPTX_INTERRUPT_MASK_ALL);
-	usleep_range(100, 200);
 
 	/* register phy here that need power init*/
 	if (!phy->phy_ops && dp->platform_id == CIX_PLATFORM_SOC) {
@@ -1979,11 +1950,36 @@ int trilin_dp_host_init(struct trilin_dp *dp)
 		}
 
 		if (IS_ERR_OR_NULL(phy->base))
-			DP_INFO("no dp_phy filed\n");
+			DP_WARN("no dp_phy\n");
 
 		trilin_usbdp_phy_register(dp);
 		trilin_edp_phy_register(dp);
 	}
+}
+
+static int reset_dp_and_reinit(struct trilin_dp *dp)
+{
+	struct trilin_phy_t *phy = &dp->phy;
+	int rc = 0;
+
+	DP_DEBUG("enter\n");
+
+	if (!IS_ERR(dp->reset)) {
+		reset_control_assert(dp->reset);
+		usleep_range(10, 20);
+		reset_control_deassert(dp->reset);
+	}
+
+	if (!IS_ERR(dp->phy_reset)) {
+		reset_control_assert(dp->phy_reset);
+		usleep_range(10, 20);
+		reset_control_deassert(dp->phy_reset);
+		phy->state = trilin_phy_power_off;
+	}
+
+	usleep_range(100, 200);
+
+	trilin_dp_register_phy(dp);
 
 	/*reset hardware*/
 	trilin_dp_write(dp, TRILIN_DPTX_TRANSMITTER_ENABLE, 1);
@@ -2000,6 +1996,27 @@ int trilin_dp_host_init(struct trilin_dp *dp)
 			return rc;
 		} else
 			DP_DEBUG("Successly prepare phy\n");
+	}
+	return rc;
+}
+
+int trilin_dp_host_init(struct trilin_dp *dp)
+{
+	int rc = 0;
+	struct trilin_phy_t *phy = &dp->phy;
+
+	DP_DEBUG("enter\n");
+	if (dp->state & DP_STATE_INITIALIZED) {
+		DP_DEBUG("[already initialized]");
+		return rc;
+	}
+
+	trilin_dp_core_power_init(dp);
+
+	rc = reset_dp_and_reinit(dp);
+	if (rc) {
+		DP_ERR("reset_dp_and_reinit failed\n");
+		return rc;
 	}
 
 	if (dp->edp_panel) {
@@ -2084,6 +2101,7 @@ static void trilin_dp_host_deinit(struct trilin_dp *dp)
 	trilin_dp_core_power_deinit(dp);
 
 	dp->state &= ~DP_STATE_INITIALIZED;
+	dp->state &= ~DP_STATE_INIT_TRAIN;
 	/* log this as it results from user action of cable dis-connection */
 	DP_DEBUG("[OK]\n");
 }
@@ -2505,18 +2523,22 @@ int trilin_dp_prepare(struct trilin_dp *dp)
 		DP_INFO("reset dp->state for gop\n");
 	}
 
-	rc = trilin_dp_host_init(dp);
-	if (rc) {
-		DP_WARN("Host init Failed");
-		goto end;
-	}
-
 	/*
 	 * If DP_STATE_ENABLED, there is nothing left to do.
 	 */
 	if (dp->state & (DP_STATE_ENABLED)) {
 		DP_DEBUG("[already enabled, mst second stream?]");
 		goto end;
+	}
+
+	if (!(dp->state & DP_STATE_INITIALIZED)) {
+		rc = trilin_dp_host_init(dp);
+		if (rc) {
+			DP_WARN("Host init Failed");
+			goto end;
+		}
+	} else if (dp->state & DP_STATE_INIT_TRAIN){
+		reset_dp_and_reinit(dp); //enable dp reset...
 	}
 
 	if (!trilin_dp_is_ready(dp)) {
