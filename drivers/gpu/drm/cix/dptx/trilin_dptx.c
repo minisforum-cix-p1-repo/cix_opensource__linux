@@ -1481,6 +1481,7 @@ static int trilin_dp_ctrl_stream_on(struct trilin_dp *dp,
 				    struct trilin_dp_panel *dp_panel)
 {
 	int rc = 0;
+	struct dptx_audio *dp_audio = &dp->dp_audio;
 	u32 regs_off = TRILIN_DPTX_SOURCE_OFFSET * dp_panel->stream_id;
 	/*enable stream power and clock*/
 	trilin_dp_ctrl_enable_stream_clocks(dp, dp_panel, true);
@@ -1489,6 +1490,13 @@ static int trilin_dp_ctrl_stream_on(struct trilin_dp *dp,
 
 	trilin_dp_write(dp, TRILIN_DPTX_VIDEO_STREAM_ENABLE + regs_off, 1);
 	trilin_dp_write(dp, TRILIN_DPTX_SECONDARY_STREAM_ENABLE + regs_off, 1);
+
+	/* re-config for dptx audio after dp resume back or plugin back if need */
+	if (dp_audio->running) {
+		DP_INFO("Re-config and enable dptx audio\n");
+		dptx_audio_reconfig_and_enable(dp);
+	}
+
 	dp->active_panels[dp_panel->stream_id] = dp_panel;
 	dp->active_stream_cnt++;
 
@@ -2307,12 +2315,6 @@ static void trilin_dp_hpd_event_work_func(struct work_struct *work)
 
 	if (dp->drm)
 		drm_helper_hpd_irq_event(dp->drm);
-
-	/* re-config for dptx audio after dp resume back if need */
-	if (dp->plugin && dp_audio->running) {
-		DP_INFO("Re-config and enable dptx audio\n");
-		dptx_audio_reconfig_and_enable(dp);
-	}
 
 	DP_INFO("dp audio plugin status = %d\n", dp->plugin);
 	dptx_audio_handle_plugged_change(dp_audio, dp->plugin);
