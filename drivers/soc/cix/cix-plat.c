@@ -92,6 +92,28 @@ static int __init parse_gop(char *arg)
 }
 early_param("efifb_enable", parse_gop);
 
+static int pcie_msg_set_addr(unsigned long vaddr)
+{
+	int i;
+	u32 __iomem *addr;
+	u32 pcie_msg_addr[5] = {0x0a01b018, 0x0a07b018, 0x0a0cb018, 0x0a0eb018, 0x0a0db018};
+
+	for (i = 0; i < 5; i++) {
+		addr = ioremap(pcie_msg_addr[i], PAGE_SIZE);
+		if (!addr) {
+			pr_err("pcie msg addr ioremap error\n");
+			return -1;
+		}
+
+		*addr = vaddr & 0xFFFFFFFF;
+		*(addr + 1) = (vaddr >> 32) & 0xFFFFFFFF;
+
+		iounmap(addr);
+	}
+
+	return 0;
+}
+
 static void smmu_pcie_quirks(struct device *dev)
 {
 	struct arm_smmu_master *master;
@@ -111,6 +133,7 @@ static void smmu_pcie_quirks(struct device *dev)
 		dev_err(dev, "pcie page NULL\n");
 		return;
 	}
+	vaddr = __pfn_to_phys(page_to_pfn(page));
 
 	/*
 	 * iommu domain not ready in iommu_get_domain_for_dev() interface, so
@@ -130,6 +153,13 @@ static void smmu_pcie_quirks(struct device *dev)
 			PAGE_SIZE, IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
 	if (ret) {
 		dev_err(dev, "iommu map fail, ret[%d]", ret);
+		goto error;
+	}
+
+	ret = pcie_msg_set_addr(vaddr);
+	if (ret) {
+		iommu_unmap(domain, vaddr, PAGE_SIZE);
+		pr_err("pcie msg addr ioremap error\n");
 		goto error;
 	}
 
