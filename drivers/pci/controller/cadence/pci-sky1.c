@@ -10,6 +10,7 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/io.h>
+#include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -2007,6 +2008,47 @@ static struct pci_host_bridge *devm_acpi_pci_alloc_host_bridge(struct device *de
 }
 #endif
 
+struct iommu_domain *sky1_pcie_get_multilevel_domain(struct pci_dev *pdev)
+{
+	struct pci_dev *current_dev;
+	struct iommu_domain *domain = NULL;
+
+	if (!pdev)
+		return NULL;
+
+	current_dev = pdev;
+	while (current_dev) {
+		domain = iommu_get_domain_for_dev(&current_dev->dev);
+		if (domain)
+			break;
+
+		current_dev = pci_upstream_bridge(current_dev);
+	}
+
+	return domain;
+}
+
+static int sky1_pcie_msg_set_addr(struct pci_dev *pdev, void *data)
+{
+	struct sky1_pcie *pcie = data;
+	struct iommu_domain *domain;
+	int ret;
+
+	domain = sky1_pcie_get_multilevel_domain(pdev);
+	/* SMMU enable */
+	if (domain) {
+		/* WA for 0 address */
+		ret = iommu_map(domain, 0, 0, PAGE_SIZE,
+				IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
+		if (ret) {
+			dev_err(pcie->dev, "iommu map fail, ret[%d]", ret);
+			return -ENODEV;
+		}
+	}
+
+	return 0;
+}
+
 static int sky1_pcie_start_link(struct cdns_pcie *cdns_pcie)
 {
 	struct sky1_pcie *pcie = dev_get_drvdata(cdns_pcie->dev);
@@ -2187,6 +2229,7 @@ static void sky1_pcie_really_probe(struct work_struct *work)
 	struct cdns_pcie_rc *rc = pcie->cdns_pcie_rc;
 	struct cdns_pcie *cdns_pcie = pcie->cdns_pcie;
 	struct device *dev = pcie->dev;
+	struct pci_host_bridge *bridge;
 	int ret;
 
 	sky1_pcie_clear_macro_pwr_en(pcie);
@@ -2208,6 +2251,9 @@ static void sky1_pcie_really_probe(struct work_struct *work)
 	ret = cdns_pcie_host_setup(rc);
 	if (ret < 0)
 		goto err_ecam_free;
+
+	bridge = pci_host_bridge_from_priv(rc);
+	pci_walk_bus(bridge->bus, sky1_pcie_msg_set_addr, pcie);
 
 	pcie->cfg_base = rc->cfg_base;
 	pcie->reg_base = cdns_pcie->reg_base;
