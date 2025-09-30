@@ -104,12 +104,18 @@ static struct workqueue_struct *i40e_wq;
 static void netdev_hw_addr_refcnt(struct i40e_mac_filter *f,
 				  struct net_device *netdev, int delta)
 {
+	struct netdev_hw_addr_list *ha_list;
 	struct netdev_hw_addr *ha;
 
 	if (!f || !netdev)
 		return;
 
-	netdev_for_each_mc_addr(ha, netdev) {
+	if (is_unicast_ether_addr(f->macaddr) || is_link_local_ether_addr(f->macaddr))
+		ha_list = &netdev->uc;
+	else
+		ha_list = &netdev->mc;
+
+	netdev_hw_addr_list_for_each(ha, ha_list) {
 		if (ether_addr_equal(ha->addr, f->macaddr)) {
 			ha->refcount += delta;
 			if (ha->refcount <= 0)
@@ -4089,6 +4095,32 @@ static void i40e_irq_affinity_notify(struct irq_affinity_notify *notify,
  **/
 static void i40e_irq_affinity_release(struct kref *ref) {}
 
+static bool is_little_core(int cpu)
+{
+	#define LITTLE_CORE_CAPACITY 500
+	/* Check if the CPU is a little CPU based on its capacity.
+	 * This is a simplified check, assuming that CPUs with
+	 * capacity less than LITTLE_CORE_CAPACITY are considered little.
+	 */
+	unsigned long capacity = topology_get_cpu_scale(cpu);
+
+	return capacity < LITTLE_CORE_CAPACITY;
+}
+
+static cpumask_t get_non_little_cpu_mask(void)
+{
+	cpumask_t mask;
+	int cpu;
+
+	/* Create a mask of all non-little CPUs */
+	cpumask_clear(&mask);
+	for_each_online_cpu(cpu) {
+		if (!is_little_core(cpu))
+			cpumask_set_cpu(cpu, &mask);
+	}
+	return mask;
+}
+
 /**
  * i40e_vsi_request_irq_msix - Initialize MSI-X interrupts
  * @vsi: the VSI being configured
@@ -4106,6 +4138,7 @@ static int i40e_vsi_request_irq_msix(struct i40e_vsi *vsi, char *basename)
 	int vector, err;
 	int irq_num;
 	int cpu;
+	cpumask_t mask = get_non_little_cpu_mask();
 
 	for (vector = 0; vector < q_vectors; vector++) {
 		struct i40e_q_vector *q_vector = vsi->q_vectors[vector];
@@ -4136,7 +4169,7 @@ static int i40e_vsi_request_irq_msix(struct i40e_vsi *vsi, char *basename)
 				 "MSIX request_irq failed, error: %d\n", err);
 			goto free_queue_irqs;
 		}
-
+		irq_set_affinity_and_hint(irq_num, &mask);
 		/* register for affinity change notifications */
 		q_vector->irq_num = irq_num;
 		q_vector->affinity_notify.notify = i40e_irq_affinity_notify;
@@ -4582,6 +4615,7 @@ static int i40e_vsi_request_irq(struct i40e_vsi *vsi, char *basename)
 {
 	struct i40e_pf *pf = vsi->back;
 	int err;
+	cpumask_t mask = get_non_little_cpu_mask();
 
 	if (pf->flags & I40E_FLAG_MSIX_ENABLED)
 		err = i40e_vsi_request_irq_msix(vsi, basename);
@@ -4594,7 +4628,7 @@ static int i40e_vsi_request_irq(struct i40e_vsi *vsi, char *basename)
 
 	if (err)
 		dev_info(&pf->pdev->dev, "request_irq failed, Error %d\n", err);
-
+	irq_set_affinity_and_hint(pf->pdev->irq, &mask);
 	return err;
 }
 
@@ -12135,6 +12169,7 @@ err_unwind:
 static int i40e_setup_misc_vector_for_recovery_mode(struct i40e_pf *pf)
 {
 	int err;
+	cpumask_t mask = get_non_little_cpu_mask();
 
 	if (pf->flags & I40E_FLAG_MSIX_ENABLED) {
 		err = i40e_setup_misc_vector(pf);
@@ -12157,6 +12192,7 @@ static int i40e_setup_misc_vector_for_recovery_mode(struct i40e_pf *pf)
 				 err);
 			return err;
 		}
+		irq_set_affinity_and_hint(pf->pdev->irq, &mask);
 		i40e_enable_misc_int_causes(pf);
 		i40e_irq_dynamic_enable_icr0(pf);
 	}
@@ -12176,6 +12212,7 @@ static int i40e_setup_misc_vector(struct i40e_pf *pf)
 {
 	struct i40e_hw *hw = &pf->hw;
 	int err = 0;
+	cpumask_t mask = get_non_little_cpu_mask();
 
 	/* Only request the IRQ once, the first time through. */
 	if (!test_and_set_bit(__I40E_MISC_IRQ_REQUESTED, pf->state)) {
@@ -12188,6 +12225,8 @@ static int i40e_setup_misc_vector(struct i40e_pf *pf)
 				 pf->int_name, err);
 			return -EFAULT;
 		}
+		irq_set_affinity_and_hint(pf->msix_entries[0].vector, &mask);
+
 	}
 
 	i40e_enable_misc_int_causes(pf);
@@ -13596,9 +13635,9 @@ int i40e_queue_pair_disable(struct i40e_vsi *vsi, int queue_pair)
 		return err;
 
 	i40e_queue_pair_disable_irq(vsi, queue_pair);
+	i40e_queue_pair_toggle_napi(vsi, queue_pair, false /* off */);
 	err = i40e_queue_pair_toggle_rings(vsi, queue_pair, false /* off */);
 	i40e_clean_rx_ring(vsi->rx_rings[queue_pair]);
-	i40e_queue_pair_toggle_napi(vsi, queue_pair, false /* off */);
 	i40e_queue_pair_clean_rings(vsi, queue_pair);
 	i40e_queue_pair_reset_stats(vsi, queue_pair);
 
@@ -16732,7 +16771,7 @@ static int __init i40e_init_module(void)
 	 * since we need to be able to guarantee forward progress even under
 	 * memory pressure.
 	 */
-	i40e_wq = alloc_workqueue("%s", WQ_MEM_RECLAIM, 0, i40e_driver_name);
+	i40e_wq = alloc_workqueue("%s", 0, 0, i40e_driver_name);
 	if (!i40e_wq) {
 		pr_err("%s: Failed to create workqueue\n", i40e_driver_name);
 		return -ENOMEM;

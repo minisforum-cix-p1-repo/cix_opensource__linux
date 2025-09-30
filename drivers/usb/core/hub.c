@@ -3324,6 +3324,39 @@ unsigned usb_wakeup_enabled_descendants(struct usb_device *udev)
 			(hub ? hub->wakeup_enabled_descendants : 0);
 }
 EXPORT_SYMBOL_GPL(usb_wakeup_enabled_descendants);
+/*
+ * The weichenshi touch monitor(http://www.szxianshiqi.com/bianxiexianshiqi/39-69.html)
+ * has build-in USB2 HUB (ID 05e3:0608 Genesys Logic, Inc. Hub), which needs to be powered
+ * before system enters suspend, otherwise, the enumeration will fail back to resume.
+ * There are two devices under the hub ports:
+ * port-1: 1d5c:7102 Fresco Logic Generic Billboard Device
+ * port-2: 27c0:0858 Cadwell Laboratories, Inc. TouchScreen
+ */
+static bool is_weichenshi_touch_monitor(struct usb_device *udev)
+{
+	if ((le16_to_cpu(udev->descriptor.idVendor) == 0x5e3) &&
+		(le16_to_cpu(udev->descriptor.idProduct) == 0x608)) {
+		struct usb_hub *hub = usb_hub_to_struct_hub(udev);
+		struct usb_device *child_udev_0, *child_udev_1;
+
+		if (udev->maxchild < 1)
+			return false;
+
+		child_udev_0 = hub->ports[0]->child;
+		child_udev_1 = hub->ports[1]->child;
+
+		if (child_udev_0 &&
+			(le16_to_cpu(child_udev_0->descriptor.idVendor) == 0x1d5c) &&
+			(le16_to_cpu(child_udev_0->descriptor.idProduct) == 0x7102) &&
+			child_udev_1 &&
+			(le16_to_cpu(child_udev_1->descriptor.idVendor) == 0x27c0) &&
+			(le16_to_cpu(child_udev_1->descriptor.idProduct) == 0x858)
+			)
+			return true;
+
+	}
+	return false;
+}
 
 /*
  * usb_port_suspend - suspend a usb device's upstream port
@@ -3382,6 +3415,11 @@ int usb_port_suspend(struct usb_device *udev, pm_message_t msg)
 	bool		really_suspend = true;
 
 	usb_lock_port(port_dev);
+
+	if (is_weichenshi_touch_monitor(udev)) {
+		dev_info(&udev->dev, "Weichenshi touch monitor, power it off\n");
+		usb_hub_set_port_power(udev->bus->root_hub, hub, port1, false);
+	}
 
 	/* enable remote wakeup when appropriate; this lets the device
 	 * wake up the upstream hub (including maybe the root hub).
@@ -4548,6 +4586,22 @@ int usb_port_disable(struct usb_device *udev)
 	struct usb_hub *hub = usb_hub_to_struct_hub(udev->parent);
 
 	return hub_port_disable(hub, udev->portnum, 0);
+}
+
+/*
+ * usb_port_vbus_power_off - power off a usb device's upstream port
+ * @udev: device to power off
+ * Context: @udev locked, must be able to sleep.
+ *
+ * Power a USB device vbus that isn't in active use.
+ */
+int usb_port_power_off(struct usb_device *udev)
+{
+	struct usb_hub *hub = usb_hub_to_struct_hub(udev->parent);
+	int port1 = udev->portnum;
+
+	return usb_hub_set_port_power(udev->bus->root_hub, hub, port1, false);
+
 }
 
 /* USB 2.0 spec, 7.1.7.3 / fig 7-29:
@@ -5954,6 +6008,36 @@ void usb_hub_cleanup(void)
 } /* usb_hub_cleanup() */
 
 /**
+ * hub_hc_release_resources - clear resources used by host controller
+ * @udev: pointer to device being released
+ *
+ * Context: task context, might sleep
+ *
+ * Function releases the host controller resources in correct order before
+ * making any operation on resuming usb device. The host controller resources
+ * allocated for devices in tree should be released starting from the last
+ * usb device in tree toward the root hub. This function is used only during
+ * resuming device when usb device require reinitialization – that is, when
+ * flag udev->reset_resume is set.
+ *
+ * This call is synchronous, and may not be used in an interrupt context.
+ */
+static void hub_hc_release_resources(struct usb_device *udev)
+{
+	struct usb_hub *hub = usb_hub_to_struct_hub(udev);
+	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
+	int i;
+
+	/* Release up resources for all children before this device */
+	for (i = 0; i < udev->maxchild; i++)
+		if (hub->ports[i]->child)
+			hub_hc_release_resources(hub->ports[i]->child);
+
+	if (hcd->driver->reset_device)
+		hcd->driver->reset_device(hcd, udev);
+}
+
+/**
  * usb_reset_and_verify_device - perform a USB port reset to reinitialize a device
  * @udev: device to reset (not in SUSPENDED or NOTATTACHED state)
  *
@@ -6016,6 +6100,9 @@ static int usb_reset_and_verify_device(struct usb_device *udev)
 
 	bos = udev->bos;
 	udev->bos = NULL;
+
+	if (udev->reset_resume)
+		hub_hc_release_resources(udev);
 
 	mutex_lock(hcd->address0_mutex);
 

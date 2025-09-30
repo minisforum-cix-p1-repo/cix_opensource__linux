@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
+export TARGET_SOC_PLATFORM := sky1
 VERSION = 6
 PATCHLEVEL = 6
 SUBLEVEL = 10
@@ -554,6 +555,8 @@ LINUXINCLUDE    := \
 		-I$(objtree)/include \
 		$(USERINCLUDE)
 
+LINUXINCLUDE += -I$(srctree)/drivers/soc/cix/ap/platform/$(TARGET_SOC_PLATFORM)
+
 KBUILD_AFLAGS   := -D__ASSEMBLY__ -fno-PIE
 
 KBUILD_CFLAGS :=
@@ -692,7 +695,6 @@ export KBUILD_DEFCONFIG KBUILD_KCONFIG CC_VERSION_TEXT
 
 # Kylin defined
 export KBUILD_BUILD_USER=KYLINSOFT
-export KBUILD_DEFCONFIG=generic_defconfig
 
 config: outputmakefile scripts_basic FORCE
 	$(Q)$(MAKE) $(build)=scripts/kconfig $@

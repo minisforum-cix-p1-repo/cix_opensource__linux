@@ -31,6 +31,9 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
+#ifdef CONFIG_PLAT_SDEI_EXCEPTIONS_TEST
+#include <linux/debugfs.h>
+#endif
 
 /*
  * The call to use to reach the firmware.
@@ -192,6 +195,12 @@ static int sdei_api_event_get_info(u32 event, u32 info, u64 *result)
 {
 	return invoke_sdei_fn(SDEI_1_0_FN_SDEI_EVENT_GET_INFO, event, info, 0,
 			      0, 0, result);
+}
+
+int sdei_api_event_set_info(u32 event, u32 info, u64 data)
+{
+	return invoke_sdei_fn(SDEI_1_0_FN_SDEI_EVENT_SET_INFO, event,
+				  info, data, 0, 0, 0);
 }
 
 static struct sdei_event *sdei_event_create(u32 event_num,
@@ -763,7 +772,7 @@ static int sdei_device_freeze(struct device *dev)
 	int err;
 
 	/* unregister private events */
-	cpuhp_remove_state(sdei_entry_point);
+	cpuhp_remove_state(sdei_hp_state);
 
 	err = sdei_unregister_shared();
 	if (err)
@@ -1062,23 +1071,72 @@ static bool __init sdei_present_acpi(void)
 	return true;
 }
 
+#ifdef CONFIG_PLAT_SDEI_EXCEPTIONS_TEST
+static int sdei_debug_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "1: echo 0 > /sys/kernel/sdei/debug, ATF exception\n");
+	return 0;
+}
+
+static int sdei_debug_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, sdei_debug_show, inode->i_private);
+}
+
+static ssize_t sdei_debug_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+{
+	if (count)
+	{
+		char c;
+
+		if (get_user(c, buf))
+			return -EFAULT;
+		sdei_api_event_set_info(0, SDEI_EVENT_EXCEPTION_DEBUG, c);
+	}
+
+	return count;
+}
+
+static const struct file_operations sdei_debug_ops = {
+	.open	 = sdei_debug_open,
+	.write	 = sdei_debug_write,
+	.read	 = seq_read,
+	.llseek	 = seq_lseek,
+	.release = single_release,
+};
+
+static void sdei_debug_init(void)
+{
+	struct dentry *sdei_debug_root;
+
+	sdei_debug_root = debugfs_create_dir("sdei", NULL);
+	debugfs_create_file("debug", S_IWUSR, sdei_debug_root, NULL, &sdei_debug_ops);
+}
+#endif
+
 void __init sdei_init(void)
 {
 	struct platform_device *pdev;
 	int ret;
 
 	ret = platform_driver_register(&sdei_driver);
+
 	if (ret || !sdei_present_acpi())
 		return;
 
 	pdev = platform_device_register_simple(sdei_driver.driver.name,
 					       0, NULL, 0);
+
 	if (IS_ERR(pdev)) {
 		ret = PTR_ERR(pdev);
 		platform_driver_unregister(&sdei_driver);
 		pr_info("Failed to register ACPI:SDEI platform device %d\n",
 			ret);
 	}
+
+#ifdef CONFIG_PLAT_SDEI_EXCEPTIONS_TEST
+	sdei_debug_init();
+#endif
 }
 
 int sdei_event_handler(struct pt_regs *regs,

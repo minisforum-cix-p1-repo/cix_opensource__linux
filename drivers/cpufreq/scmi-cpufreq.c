@@ -301,6 +301,9 @@ static int scmi_cpufreq_probe(struct scmi_device *sdev)
 
 	handle = sdev->handle;
 
+	if (!dev->of_node)
+		return -ENODEV;
+
 	if (!handle)
 		return -ENODEV;
 

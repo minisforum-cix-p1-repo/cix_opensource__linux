@@ -26,10 +26,19 @@
  */
 
 #define CPUFREQ_THERMAL_MIN_STEP 0
+
+#ifdef CONFIG_ARCH_CIX
+#define CPUFREQ_THERMAL_MAX_STEP 10
+#else
 #define CPUFREQ_THERMAL_MAX_STEP 3
+#endif
 
 static DEFINE_PER_CPU(unsigned int, cpufreq_thermal_reduction_pctg);
 
+#ifdef CONFIG_ARCH_CIX
+#define reduction_pctg(cpu) \
+	per_cpu(cpufreq_thermal_reduction_pctg, cpu)
+#else
 #define reduction_pctg(cpu) \
 	per_cpu(cpufreq_thermal_reduction_pctg, phys_package_first_cpu(cpu))
 
@@ -50,6 +59,7 @@ static int phys_package_first_cpu(int cpu)
 			return i;
 	return 0;
 }
+#endif
 
 static int cpu_has_cpufreq(unsigned int cpu)
 {
@@ -68,9 +78,10 @@ static int cpu_has_cpufreq(unsigned int cpu)
 
 static int cpufreq_get_max_state(unsigned int cpu)
 {
+#ifndef CONFIG_ARCH_CIX
 	if (!cpu_has_cpufreq(cpu))
 		return 0;
-
+#endif
 	return CPUFREQ_THERMAL_MAX_STEP;
 }
 
@@ -112,9 +123,15 @@ static int cpufreq_set_cur_state(unsigned int cpu, int state)
 		policy = cpufreq_cpu_get(i);
 		if (!policy)
 			return -EINVAL;
-
+#ifdef CONFIG_ARCH_CIX
+		if (policy != cpufreq_cpu_get(cpu)) {
+			cpufreq_cpu_put(policy);
+			continue;
+		}
+		max_freq = (policy->cpuinfo.max_freq * (100 - reduction_pctg(i) * 5)) / 100;
+#else
 		max_freq = (policy->cpuinfo.max_freq * (100 - reduction_pctg(i) * 20)) / 100;
-
+#endif
 		cpufreq_cpu_put(policy);
 
 		ret = freq_qos_update_request(&pr->thermal_req, max_freq);

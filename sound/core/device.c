@@ -211,6 +211,9 @@ void snd_device_disconnect_all(struct snd_card *card)
 
 	if (snd_BUG_ON(!card))
 		return;
+
+	dev_info(card->dev, "%s:%s\n", __func__, card->driver);
+
 	list_for_each_entry_reverse(dev, &card->devices, list)
 		__snd_device_disconnect(dev);
 }
@@ -225,6 +228,9 @@ void snd_device_free_all(struct snd_card *card)
 
 	if (snd_BUG_ON(!card))
 		return;
+
+	dev_info(card->dev, "%s:%s\n", __func__, card->driver);
+
 	list_for_each_entry_safe_reverse(dev, next, &card->devices, list) {
 		/* exception: free ctl and lowlevel stuff later */
 		if (dev->type == SNDRV_DEV_CONTROL ||

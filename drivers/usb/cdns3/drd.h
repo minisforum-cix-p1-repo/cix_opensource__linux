@@ -79,7 +79,11 @@ struct cdnsp_otg_regs {
 	__le32 susp_timing_ctrl;
 };
 
-#define OTG_CDNSP_DID	0x0004034E
+/* CDNSP driver supports 0x000403xx Cadence USB controller family. */
+#define OTG_CDNSP_CHECK_DID(did) (((did) & GENMASK(31, 8)) == 0x00040300)
+
+/* CDNS3 driver supports 0x000402xx Cadence USB controller family. */
+#define OTG_CDNS3_CHECK_DID(did) (((did) & GENMASK(31, 8)) == 0x00040200)
 
 /*
  * Common registers interface for both CDNS3 and CDNSP version of DRD.
@@ -202,6 +206,10 @@ struct cdns_otg_irq_regs {
 #define CDNS3_ID_PERIPHERAL		1
 #define CDNS3_ID_HOST			0
 
+#define XEC_CFG_3XPORT_MODE_VALUE_DIS_U3	0xa0031e03
+#define XEC_CFG_3XPORT_MODE_VALUE_EN_U3		0xa0031e00
+#define XEC_CFG_3XPORT_MODE		0x2040
+
 bool cdns_is_host(struct cdns *cdns);
 bool cdns_is_device(struct cdns *cdns);
 int cdns_get_id(struct cdns *cdns);
@@ -216,4 +224,6 @@ void cdns_drd_gadget_off(struct cdns *cdns);
 int cdns_drd_host_on(struct cdns *cdns);
 void cdns_drd_host_off(struct cdns *cdns);
 bool cdns_power_is_lost(struct cdns *cdns);
+void cdns_otg_disable_irq(struct cdns *cdns);
+void cdns_otg_enable_irq(struct cdns *cdns);
 #endif /* __LINUX_CDNS3_DRD */

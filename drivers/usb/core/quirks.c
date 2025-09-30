@@ -138,6 +138,9 @@ static int quirks_param_set(const char *value, const struct kernel_param *kp)
 			case 'o':
 				flags |= USB_QUIRK_HUB_SLOW_RESET;
 				break;
+			case 'p':
+				flags |= USB_QUIRK_POWER_OFF_VBUS_SUSPEND;
+				break;
 			/* Ignore unrecognized flag characters */
 			}
 		}
@@ -542,6 +545,10 @@ static const struct usb_device_id usb_quirk_list[] = {
 	/* INTEL VALUE SSD */
 	{ USB_DEVICE(0x8086, 0xf1a5), .driver_info = USB_QUIRK_RESET_RESUME },
 
+	/* CFORCE Screen */
+	{ USB_DEVICE(0x1a40, 0x0801), .driver_info = USB_QUIRK_POWER_OFF_VBUS_SUSPEND |
+		USB_QUIRK_DISCONNECT_SUSPEND},
+	{ USB_DEVICE(0x30fa, 0x0301), .driver_info = USB_QUIRK_RESET_RESUME },
 	{ }  /* terminating entry must be last */
 };
 

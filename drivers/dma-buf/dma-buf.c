@@ -32,6 +32,9 @@
 #include <uapi/linux/magic.h>
 
 #include "dma-buf-sysfs-stats.h"
+#ifdef CONFIG_PLAT_FDLEAK
+#include <linux/soc/cix/dst_fdleak.h>
+#endif
 
 static inline int is_dma_buf_file(struct file *);
 
@@ -100,6 +103,10 @@ static int dma_buf_file_release(struct inode *inode, struct file *file)
 		list_del(&dmabuf->list_node);
 		mutex_unlock(&db_list.lock);
 	}
+
+#ifdef CONFIG_PLAT_FDLEAK
+	fdleak_report(FDLEAK_WP_DMABUF, 1);
+#endif
 
 	return 0;
 }
@@ -676,6 +683,10 @@ struct dma_buf *dma_buf_export(const struct dma_buf_export_info *exp_info)
 	list_add(&dmabuf->list_node, &db_list.head);
 	mutex_unlock(&db_list.lock);
 
+#ifdef CONFIG_PLAT_FDLEAK
+	fdleak_report(FDLEAK_WP_DMABUF, 2);
+#endif
+
 	return dmabuf;
 
 err_dmabuf:
@@ -709,6 +720,10 @@ int dma_buf_fd(struct dma_buf *dmabuf, int flags)
 		return fd;
 
 	fd_install(fd, dmabuf->file);
+
+#ifdef CONFIG_PLAT_FDLEAK
+	fdleak_report(FDLEAK_WP_DMABUF, 0);
+#endif
 
 	return fd;
 }

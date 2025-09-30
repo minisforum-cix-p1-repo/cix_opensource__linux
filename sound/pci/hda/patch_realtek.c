@@ -7109,6 +7109,14 @@ static void alc_fixup_headset_mic(struct hda_codec *codec,
 	}
 }
 
+static void alc_fixup_3kpull_low(struct hda_codec *codec,
+				 const struct hda_fixup *fix, int action)
+{
+	struct alc_spec *spec = codec->spec;
+
+	if (action == HDA_FIXUP_ACT_PRE_PROBE)
+		spec->en_3kpull_low = false;
+}
 
 enum {
 	ALC269_FIXUP_GPIO2,
@@ -7379,6 +7387,7 @@ enum {
 	ALC2XX_FIXUP_HEADSET_MIC,
 	ALC289_FIXUP_DELL_CS35L41_SPI_2,
 	ALC294_FIXUP_CS35L41_I2C_2,
+	ALC256_FIXUP_DIS_3KPULL_LOW,
 };
 
 /* A special fixup for Lenovo C940 and Yoga Duet 7;
@@ -9512,6 +9521,10 @@ static const struct hda_fixup alc269_fixups[] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = cs35l41_fixup_i2c_two,
 	},
+	[ALC256_FIXUP_DIS_3KPULL_LOW] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = alc_fixup_3kpull_low,
+	},
 };
 
 static const struct snd_pci_quirk alc269_fixup_tbl[] = {
@@ -9945,6 +9958,7 @@ static const struct snd_pci_quirk alc269_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x10ec, 0x124c, "Intel Reference board", ALC295_FIXUP_CHROME_BOOK),
 	SND_PCI_QUIRK(0x10ec, 0x1252, "Intel Reference board", ALC295_FIXUP_CHROME_BOOK),
 	SND_PCI_QUIRK(0x10ec, 0x1254, "Intel Reference board", ALC295_FIXUP_CHROME_BOOK),
+	SND_PCI_QUIRK(0x10ec, 0x129e, "CIX Phecda Board", ALC256_FIXUP_DIS_3KPULL_LOW),
 	SND_PCI_QUIRK(0x10ec, 0x12cc, "Intel Reference board", ALC295_FIXUP_CHROME_BOOK),
 	SND_PCI_QUIRK(0x10f7, 0x8338, "Panasonic CF-SZ6", ALC269_FIXUP_HEADSET_MODE),
 	SND_PCI_QUIRK(0x144d, 0xc109, "Samsung Ativ book 9 (NP900X3G)", ALC269_FIXUP_INV_DMIC),

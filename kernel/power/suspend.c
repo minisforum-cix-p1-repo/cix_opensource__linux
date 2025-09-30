@@ -30,6 +30,9 @@
 #include <trace/events/power.h>
 #include <linux/compiler.h>
 #include <linux/moduleparam.h>
+#ifdef CONFIG_PLAT_BBOX
+#include <linux/soc/cix/rdr_platform.h>
+#endif
 
 #include "power.h"
 
@@ -501,6 +504,9 @@ int suspend_devices_and_enter(suspend_state_t state)
 	error = dpm_suspend_start(PMSG_SUSPEND);
 	if (error) {
 		pr_err("Some devices failed to suspend, or early wake event detected\n");
+#ifdef CONFIG_PLAT_BBOX
+		rdr_system_error(MODID_AP_SUSPEND_DEVICE_FAIL, 0, 0);
+#endif
 		goto Recover_platform;
 	}
 	suspend_test_finish("suspend devices");

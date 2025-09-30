@@ -418,7 +418,7 @@ static irqreturn_t hym8563_irq(int irq, void *dev_id)
 
 	data = i2c_smbus_read_byte_data(client, HYM8563_CTL2);
 	if (data < 0) {
-		dev_err(&client->dev, "%s: error reading i2c data %d\n",
+		dev_dbg(&client->dev, "%s: error reading i2c data %d\n",
 			__func__, data);
 		goto out;
 	}
@@ -564,6 +564,12 @@ static const struct i2c_device_id hym8563_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, hym8563_id);
 
+static const struct acpi_device_id hym8563_acpi_match[] = {
+	{ .id = "HYM8563", .driver_data = 0 },
+	{ },
+};
+MODULE_DEVICE_TABLE(acpi, hym8563_acpi_match);
+
 static const struct of_device_id hym8563_dt_idtable[] = {
 	{ .compatible = "haoyu,hym8563" },
 	{},
@@ -575,6 +581,7 @@ static struct i2c_driver hym8563_driver = {
 		.name	= "rtc-hym8563",
 		.pm	= &hym8563_pm_ops,
 		.of_match_table	= hym8563_dt_idtable,
+		.acpi_match_table = ACPI_PTR(hym8563_acpi_match),
 	},
 	.probe		= hym8563_probe,
 	.id_table	= hym8563_id,

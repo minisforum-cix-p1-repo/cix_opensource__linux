@@ -222,10 +222,21 @@ int i2c_generic_scl_recovery(struct i2c_adapter *adap)
 	struct i2c_bus_recovery_info *bri = adap->bus_recovery_info;
 	int i = 0, scl = 1, ret = 0;
 
+	void __iomem *vaddr = NULL;
+	u32 val[2];
+
 	if (bri->prepare_recovery)
 		bri->prepare_recovery(adap);
 	if (bri->pinctrl)
 		pinctrl_select_state(bri->pinctrl, bri->pins_gpio);
+
+	if (!strncmp(dev_name(adap->dev.parent), "CIXH200B:03", 11)) {
+		vaddr = ioremap(0x04170000, 4096);
+		val[0] = readl_relaxed(vaddr + 0x94);
+		val[1] = readl_relaxed(vaddr + 0x98);
+		writel_relaxed(0x0000015c, vaddr + 0x94); //set as gpio
+		writel_relaxed(0x0000015c, vaddr + 0x98); //set as gpio
+	}
 
 	/*
 	 * If we can set SDA, we will always create a STOP to ensure additional
@@ -283,6 +294,12 @@ int i2c_generic_scl_recovery(struct i2c_adapter *adap)
 		bri->unprepare_recovery(adap);
 	if (bri->pinctrl)
 		pinctrl_select_state(bri->pinctrl, bri->pins_default);
+
+	if (!strncmp(dev_name(adap->dev.parent), "CIXH200B:03", 11)) {
+		writel_relaxed(val[0], vaddr + 0x94); //set as i2c
+		writel_relaxed(val[1], vaddr + 0x98); //set as i2c
+		iounmap(vaddr);
+	}
 
 	return ret;
 }

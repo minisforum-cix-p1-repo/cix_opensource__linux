@@ -1141,7 +1141,12 @@ static int probe_codec(struct azx *chip, int addr)
 	if (err < 0 || res == -1)
 		return -EIO;
 	dev_dbg(chip->card->dev, "codec #%d probed OK\n", addr);
-	return 0;
+
+	/* config init verbs if required, such as not config by BIOS */
+	if (bus->config_init_verbs)
+		err = bus->config_init_verbs(bus, res);
+
+	return err;
 }
 
 void snd_hda_bus_reset(struct hda_bus *bus)

@@ -25,7 +25,7 @@
 #define CDNSP_ENDPOINTS_NUM	31
 
 /* Best Effort Service Latency. */
-#define CDNSP_DEFAULT_BESL	0
+#define CDNSP_DEFAULT_BESL	5
 
 /* Device Controller command default timeout value in us */
 #define CDNSP_CMD_TIMEOUT	(15 * 1000)

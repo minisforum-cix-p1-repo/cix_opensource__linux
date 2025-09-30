@@ -1577,8 +1577,12 @@ int usb_suspend(struct device *dev, pm_message_t msg)
 	if (r)
 		return r;
 
-	if (udev->quirks & USB_QUIRK_DISCONNECT_SUSPEND)
+	if (udev->quirks & USB_QUIRK_DISCONNECT_SUSPEND) {
 		usb_port_disable(udev);
+
+		if (udev->quirks & USB_QUIRK_POWER_OFF_VBUS_SUSPEND)
+			return usb_port_power_off(udev);
+	}
 
 	return 0;
 }
@@ -2028,9 +2032,17 @@ int usb_disable_usb2_hardware_lpm(struct usb_device *udev)
 
 #endif /* CONFIG_PM */
 
+static void usb_device_shutdown(struct device *dev)
+{
+	/* Put all connected USB device in suspend for later D3 operation */
+	if (dev->type == &usb_device_type)
+		usb_suspend(dev, PMSG_HIBERNATE);
+}
+
 const struct bus_type usb_bus_type = {
 	.name =		"usb",
 	.match =	usb_device_match,
 	.uevent =	usb_uevent,
+	.shutdown =	usb_device_shutdown,
 	.need_parent_lock =	true,
 };

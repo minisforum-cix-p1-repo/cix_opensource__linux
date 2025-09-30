@@ -154,19 +154,21 @@ bool cdns_is_device(struct cdns *cdns)
  * cdns_otg_disable_irq - Disable all OTG interrupts
  * @cdns: Pointer to controller context structure
  */
-static void cdns_otg_disable_irq(struct cdns *cdns)
+void cdns_otg_disable_irq(struct cdns *cdns)
 {
-	writel(0, &cdns->otg_irq_regs->ien);
+	if (cdns->version && cdns->dr_mode == USB_DR_MODE_OTG)
+		writel(0, &cdns->otg_irq_regs->ien);
 }
 
 /**
  * cdns_otg_enable_irq - enable id and sess_valid interrupts
  * @cdns: Pointer to controller context structure
  */
-static void cdns_otg_enable_irq(struct cdns *cdns)
+void cdns_otg_enable_irq(struct cdns *cdns)
 {
-	writel(OTGIEN_ID_CHANGE_INT | OTGIEN_VBUSVALID_RISE_INT |
-	       OTGIEN_VBUSVALID_FALL_INT, &cdns->otg_irq_regs->ien);
+	if (cdns->dr_mode == USB_DR_MODE_OTG)
+		writel(OTGIEN_ID_CHANGE_INT | OTGIEN_VBUSVALID_RISE_INT |
+			OTGIEN_VBUSVALID_FALL_INT, &cdns->otg_irq_regs->ien);
 }
 
 /**
@@ -198,6 +200,7 @@ int cdns_drd_host_on(struct cdns *cdns)
 
 	phy_set_mode(cdns->usb2_phy, PHY_MODE_USB_HOST);
 	phy_set_mode(cdns->usb3_phy, PHY_MODE_USB_HOST);
+
 	return ret;
 }
 
@@ -298,8 +301,6 @@ static int cdns_init_otg_mode(struct cdns *cdns)
 	ret = cdns_set_mode(cdns, USB_DR_MODE_OTG);
 	if (ret)
 		return ret;
-
-	cdns_otg_enable_irq(cdns);
 
 	return 0;
 }
@@ -422,15 +423,21 @@ int cdns_drd_init(struct cdns *cdns)
 
 		cdns->otg_regs = (void __iomem *)&cdns->otg_v1_regs->cmd;
 
-		if (readl(&cdns->otg_cdnsp_regs->did) == OTG_CDNSP_DID) {
+		state = readl(&cdns->otg_cdnsp_regs->did);
+
+		if (OTG_CDNSP_CHECK_DID(state)) {
 			cdns->otg_irq_regs = (struct cdns_otg_irq_regs __iomem *)
 					      &cdns->otg_cdnsp_regs->ien;
 			cdns->version  = CDNSP_CONTROLLER_V2;
-		} else {
+			writel(1, &cdns->otg_cdnsp_regs->simulate);
+		} else if (OTG_CDNS3_CHECK_DID(state)) {
 			cdns->otg_irq_regs = (struct cdns_otg_irq_regs __iomem *)
 					      &cdns->otg_v1_regs->ien;
 			writel(1, &cdns->otg_v1_regs->simulate);
 			cdns->version  = CDNS3_CONTROLLER_V1;
+		} else {
+			dev_err(cdns->dev, "not supporte DID=0x%08x\n", state);
+			return -EINVAL;
 		}
 
 		dev_dbg(cdns->dev, "DRD version v1 (ID: %08x, rev: %08x)\n",
@@ -483,15 +490,17 @@ int cdns_drd_exit(struct cdns *cdns)
 	return 0;
 }
 
-
 /* Indicate the cdns3 core was power lost before */
 bool cdns_power_is_lost(struct cdns *cdns)
 {
 	if (cdns->version == CDNS3_CONTROLLER_V0) {
 		if (!(readl(&cdns->otg_v0_regs->simulate) & BIT(0)))
 			return true;
-	} else {
+	} else if (cdns->version == CDNS3_CONTROLLER_V1) {
 		if (!(readl(&cdns->otg_v1_regs->simulate) & BIT(0)))
+			return true;
+	} else if (cdns->version == CDNSP_CONTROLLER_V2) {
+		if (!(readl(&cdns->otg_cdnsp_regs->simulate) & BIT(0)))
 			return true;
 	}
 	return false;
