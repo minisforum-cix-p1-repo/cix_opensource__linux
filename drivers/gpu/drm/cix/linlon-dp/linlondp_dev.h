@@ -152,6 +152,9 @@ struct linlondp_dev_funcs {
 
 	/** @close_gop: close dpu if gop is enabled */
 	void (*close_gop)(struct linlondp_dev *mdev);
+
+	/** @reset_dpu: sw reset linlon_dp */
+	void (*dpu_reset)(struct linlondp_dev *mdev);
 };
 
 /*
