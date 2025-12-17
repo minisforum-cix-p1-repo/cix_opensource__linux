@@ -145,7 +145,6 @@ struct rx8900_data {
 	u8 ctrlreg;
 	unsigned exiting:1;
 	bool suspended;
-	spinlock_t lock;
 	struct rtc_time last_alarm_time;
 };
 
@@ -258,23 +257,18 @@ static void rx8900_work(struct work_struct *work)
 {
 	struct rx8900_data *rx8900 = container_of(work, struct rx8900_data, work);
 	struct i2c_client *client = rx8900->client;
-	struct mutex *lock = &rx8900->rtc->ops_lock;
 	u8 flags;
 	struct irq_desc *desc;
 
-	mutex_lock(lock);
-
-	spin_lock(&rx8900->lock);
-	if (rx8900->suspended == true) {
-		pm_system_wakeup();
-		dev_warn(&client->dev, "detected rtc wakeup event, block system suspend\n");
-		spin_unlock(&rx8900->lock);
-		goto out;
-	}
-	spin_unlock(&rx8900->lock);
-
+	rtc_lock(rx8900->rtc);
 	if (rx8900_read_reg(client, RX8900_BTC_FLAG, &flags))
 		goto out;
+
+	if (rx8900->suspended == true && flags != 0) {
+		pm_system_wakeup();
+		dev_warn(&client->dev, "detected rtc wakeup event, block system suspend\n");
+		goto out;
+	}
 
 	dev_dbg(&client->dev, "%s REG[%02xh]=>%02xh\n", __func__, RX8900_BTC_FLAG, flags);
 
@@ -318,7 +312,7 @@ out:
 	if (!rx8900->exiting && desc && desc->depth)
 		enable_irq(client->irq);
 
-	mutex_unlock(lock);
+	rtc_unlock(rx8900->rtc);
 	return;
 }
 
@@ -353,10 +347,6 @@ static int rx8900_get_time(struct device *dev, struct rtc_time *dt)
 	err = rx8900_read_regs(rx8900->client, RX8900_BTC_SEC, 7, date);
 	if (err)
 		return err;
-
-	dev_dbg(dev, "%s: read 0x%02x 0x%02x "
-		"0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\n", __func__,
-		date[0], date[1], date[2], date[3], date[4], date[5], date[6]);
 
 	dt->tm_sec  = bcd2bin(date[RX8900_BTC_SEC] & 0x7f);
 	dt->tm_min  = bcd2bin(date[RX8900_BTC_MIN] & 0x7f);
@@ -834,7 +824,6 @@ static int rx8900_probe(struct i2c_client *client)
 
 	device_set_wakeup_capable(&client->dev, true);
 	device_wakeup_enable(&client->dev);
-	spin_lock_init(&rx8900->lock);
 	rx8900->rtc = devm_rtc_device_register(&client->dev, rx8900_driver.driver.name, &rx8900_rtc_ops, THIS_MODULE);
 
 	if (IS_ERR(rx8900->rtc)) {
@@ -945,17 +934,16 @@ static int rx8900_resume(struct device *dev)
 	u8 extreg;
 	struct irq_desc *desc;
 	int err = 0;
-	unsigned long irq_flags;
 
 	if (client->irq > 0 && device_may_wakeup(dev)) {
+		rtc_lock(rx8900->rtc);
+		rx8900->suspended = false;
+		rtc_unlock(rx8900->rtc);
+		disable_irq_wake(client->irq);
 		desc = irq_to_desc(client->irq);
 		if (desc->depth) {
 			enable_irq(client->irq);
 		}
-		disable_irq_wake(client->irq);
-		spin_lock_irqsave(&rx8900->lock, irq_flags);
-		rx8900->suspended = false;
-		spin_unlock_irqrestore(&rx8900->lock, irq_flags);
 	}
 
 	if (!seconds_alarm_values) {
@@ -983,69 +971,77 @@ static int rx8900_suspend(struct device *dev)
 	struct i2c_client *client = rx8900->client;
 	u8 extreg, ctrlreg, counter[2];
 	int err = 0;
-	unsigned long irq_flags;
 	time64_t cur_secs, alarm_secs;
 	struct rtc_time tm;
+	u8 ctrl;
 
+	flush_work(&rx8900->work);
+	rtc_lock(rx8900->rtc);
 	if (client->irq > 0 && device_may_wakeup(dev)) {
-		spin_lock_irqsave(&rx8900->lock, irq_flags);
 		rx8900->suspended = true;
-		spin_unlock_irqrestore(&rx8900->lock, irq_flags);
 		enable_irq_wake(client->irq);
 	}
 
 	dev_dbg(&client->dev, "%s: seconds_alarm_values=%d\n", __func__, seconds_alarm_values);
 
-	flush_work(&rx8900->work);
-
 	if (rx8900_get_time(&client->dev, &tm) < 0) {
 		dev_warn(&client->dev, "Failed to get current time\n");
-		return 0;
+		goto out;
 	}
 	cur_secs = rtc_tm_to_time64(&tm);
 	alarm_secs = rtc_tm_to_time64(&rx8900->last_alarm_time);
-	if (seconds_alarm_values <= 0 || cur_secs >= alarm_secs)
-		return 0;
+	if (seconds_alarm_values <= 0 || cur_secs >= alarm_secs) {
+		dev_warn(&client->dev, "Current time %lld is greater than alarm time %lld!\n",
+			 cur_secs, alarm_secs);
+		goto out;
+	}
 
 	if (seconds_alarm_values >= RX8900_FIE_MAX_TIME) {
 		err = rx8900_read_reg(client, RX8900_BTC_CTRL, &ctrlreg);
 		if (err < 0)
-			return err;
+			goto out;
 		ctrlreg &= ~RX8900_BTC_CTRL_UIE;
 		err = rx8900_write_reg(client, RX8900_BTC_CTRL, ctrlreg);
-		if (err)
-			return err;
-		return 0;
+		goto out;
 	}
+
+	//Clear all the flags
+	err = rx8900_read_regs(client, RX8900_BTC_FLAG, 1, &ctrl);
+	if (err <0)
+		goto out;
+	ctrl &= ~(RX8900_BTC_FLAG_AF | RX8900_BTC_FLAG_UF | RX8900_BTC_FLAG_TF);
+	dev_dbg(dev, "%s: clear AF flag => 0x%02x\n", __func__, ctrl);
+	err = rx8900_write_reg(rx8900->client, RX8900_BTC_FLAG, ctrl);
+	if (err)
+		goto out;
 
 	/* Configure FIXED timer counter0, counter1 */
 	counter[0] = (u8)(seconds_alarm_values);
 	counter[1] = (u8)(seconds_alarm_values >> 8);
 	err = rx8900_write_regs(client, RX8900_BTC_TIMER_CNT_0, 2, counter);
 	if (err)
-		return err;
+		goto out;
 
 	/* Configure FIXED timer clock source interrupt enable */
 	err = rx8900_read_reg(client, RX8900_BTC_CTRL, &ctrlreg);
 	if (err < 0)
-		return err;
+		goto out;
 	ctrlreg &= ~(RX8900_BTC_CTRL_TIE | RX8900_BTC_CTRL_UIE | RX8900_BTC_CTRL_AIE);
 	ctrlreg |= RX8900_BTC_CTRL_TIE;
 	err = rx8900_write_reg(client, RX8900_BTC_CTRL, ctrlreg);
 	if (err)
-		return err;
+		goto out;
 
 	/* Configure FIXED timer clock source and ENABLE fixed timer */
 	err = rx8900_read_reg(client, RX8900_BTC_EXT, &extreg);
 	if (err < 0)
-		return err;
+		goto out;
 	extreg &= ~(RX8900_BTC_EXT_TE | RX8900_BTC_EXT_TSEL0 | RX8900_BTC_EXT_TSEL1);
 	extreg |= RX8900_BTC_EXT_TE | RX8900_BTC_EXT_TSEL1;
 	err = rx8900_write_reg(client, RX8900_BTC_EXT, extreg);
-	if (err)
-		return err;
-
-	return 0;
+out:
+	rtc_unlock(rx8900->rtc);
+	return err;
 }
 
 static const struct dev_pm_ops rx8900_pm_ops = {
