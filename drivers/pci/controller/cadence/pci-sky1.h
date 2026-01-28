@@ -161,6 +161,8 @@ struct sky1_pcie {
 	struct workqueue_struct *wk;
 	struct delayed_work wk_handler;
 	bool is_probe;
+
+	struct iommu_domain *last_domain;
 };
 
 enum esky1_lpwr {

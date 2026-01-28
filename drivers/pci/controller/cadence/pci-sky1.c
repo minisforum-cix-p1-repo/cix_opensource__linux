@@ -2031,19 +2031,24 @@ struct iommu_domain *sky1_pcie_get_multilevel_domain(struct pci_dev *pdev)
 static int sky1_pcie_msg_set_addr(struct pci_dev *pdev, void *data)
 {
 	struct sky1_pcie *pcie = data;
-	struct iommu_domain *domain;
+	struct iommu_domain *domain = NULL;
 	int ret;
 
 	domain = sky1_pcie_get_multilevel_domain(pdev);
+	if (domain && domain == pcie->last_domain)
+		return 0;
+
 	/* SMMU enable */
 	if (domain) {
 		/* WA for 0 address */
 		ret = iommu_map(domain, 0, 0, PAGE_SIZE,
 				IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
 		if (ret) {
-			dev_err(pcie->dev, "iommu map fail, ret[%d]", ret);
+			dev_err(pcie->dev, "iommu map fail, ret[%d]\n", ret);
 			return -ENODEV;
 		}
+
+		pcie->last_domain = domain;
 	}
 
 	return 0;
@@ -2252,6 +2257,7 @@ static void sky1_pcie_really_probe(struct work_struct *work)
 	if (ret < 0)
 		goto err_ecam_free;
 
+	pcie->last_domain = NULL;
 	bridge = pci_host_bridge_from_priv(rc);
 	pci_walk_bus(bridge->bus, sky1_pcie_msg_set_addr, pcie);
 
