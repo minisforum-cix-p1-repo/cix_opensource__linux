@@ -378,6 +378,7 @@ struct cdns_pcie_rc {
 	unsigned int		quirk_detect_quiet_flag:1;
 	unsigned int		ecam_support_flag:1;
 	u8			id;
+	int			(*bar_resize)(struct cdns_pcie_rc *rc);
 };
 
 /**

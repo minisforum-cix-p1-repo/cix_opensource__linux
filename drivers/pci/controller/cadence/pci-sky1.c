@@ -102,6 +102,21 @@
 #define SKY1_PHY_DELAY_US_MAX (SKY1_PHY_DELAY_US_MIN + 1)
 #define SKY1_PHY_TIMEOUT_CNT (50)
 
+struct pcie_rebar_rule {
+	u16 domain;
+	u8 bus;
+	u8 slot;
+	u8 func;
+	int bar;       /* default 2 */
+	int size_bit;  /* REBAR spec bit: 10=1GB, 13=8GB, etc. default 13 */
+};
+
+#define PCIE_REBAR_RULES_MAX	8
+#define PCIE_REBAR_DEFAULT_BAR	2
+#define PCIE_REBAR_DEFAULT_SIZE_BIT	13
+static struct pcie_rebar_rule pcie_rebar_rules[PCIE_REBAR_RULES_MAX] __ro_after_init;
+static unsigned int pcie_rebar_rules_cnt __ro_after_init;
+
 static DEFINE_MUTEX(sky1_init_mutex);
 static atomic_t phy_rst_deassert_cnt = ATOMIC_INIT(0);
 static atomic_t phy_rst_assert_cnt = ATOMIC_INIT(0);
@@ -2227,6 +2242,99 @@ static struct syscore_ops sky1_pcie_syscore_ops = {
 	.shutdown = sky1_pcie_syscore_op_shutdown,
 };
 
+/*
+ * Generic PCIe Resizable BAR resize quirk via cmdline.
+ *
+ * Usage:
+ *   sky1_pcie_rebar="0000:c3:00.0"               BAR2, size_bit=13 (8GB)
+ *   sky1_pcie_rebar="0000:c3:00.0,13"            BAR2, size_bit=13
+ *   sky1_pcie_rebar="0000:c3:00.0,2,13"          BAR2, size_bit=13
+ *   sky1_pcie_rebar="0000:c4:00.0,0,12"          BAR0, size_bit=12 (4GB)
+ *
+ * Multiple rules separated by semicolon:
+ *   sky1_pcie_rebar="0000:c3:00.0,2,13;0000:c4:00.0,0,12"
+ *
+ * size_bit matches PCI_REBAR_CAP_SIZES bitmap (from sysfs resourceN_resize):
+ *   10=1GB, 11=2GB, 12=4GB, 13=8GB, 14=16GB, etc.
+ */
+static int __init pcie_rebar_add_rule(char *token)
+{
+	unsigned int domain, bus, slot, func;
+	unsigned int bar = PCIE_REBAR_DEFAULT_BAR;
+	unsigned int size_bit = PCIE_REBAR_DEFAULT_SIZE_BIT;
+	struct pcie_rebar_rule *rule;
+	int n;
+
+	if (pcie_rebar_rules_cnt >= ARRAY_SIZE(pcie_rebar_rules))
+		return -ENOSPC;
+
+	if (!token || !*token)
+		return -EINVAL;
+
+	/* Supported formats:
+	 *   <domain>:<bus>:<slot>.<func>
+	 *   <domain>:<bus>:<slot>.<func>,<size_bit>
+	 *   <domain>:<bus>:<slot>.<func>,<bar>,<size_bit>
+	 */
+	n = sscanf(token, "%x:%x:%x.%x,%u,%u",
+		   &domain, &bus, &slot, &func, &bar, &size_bit);
+	if (n == 5) {
+		size_bit = bar;
+		bar = PCIE_REBAR_DEFAULT_BAR;
+	} else if (n != 4 && n != 6) {
+		pr_warn("REBAR: invalid rule format '%s'\n", token);
+		return -EINVAL;
+	}
+
+	if (domain > 0xffff || bus > 0xff || slot > 0x1f || func > 0x7) {
+		pr_warn("REBAR: invalid BDF in '%s'\n", token);
+		return -EINVAL;
+	}
+
+	if (bar > 5) {
+		pr_warn("REBAR: invalid BAR index %u in '%s'\n", bar, token);
+		return -EINVAL;
+	}
+
+	if (size_bit > 31) {
+		pr_warn("REBAR: invalid size_bit %u in '%s'\n", size_bit, token);
+		return -EINVAL;
+	}
+
+	rule = &pcie_rebar_rules[pcie_rebar_rules_cnt];
+	rule->domain = (u16)domain;
+	rule->bus = (u8)bus;
+	rule->slot = (u8)slot;
+	rule->func = (u8)func;
+	rule->bar = (int)bar;
+	rule->size_bit = (int)size_bit;
+
+	pcie_rebar_rules_cnt++;
+	return 0;
+}
+
+static int __init sky1_pcie_rebar_parse(char *str)
+{
+	char *token;
+	int ok = 0, fail = 0;
+
+	if (!str || !*str)
+		return 0;
+
+	while ((token = strsep(&str, ";")) != NULL) {
+		if (!*token)
+			continue;
+		if (pcie_rebar_add_rule(token) == 0)
+			ok++;
+		else
+			fail++;
+	}
+
+	pr_info("REBAR: %d rule(s) parsed, %d failed\n", ok, fail);
+	return 1;
+}
+__setup("sky1_pcie_rebar=", sky1_pcie_rebar_parse);
+
 static void sky1_pcie_really_probe(struct work_struct *work)
 {
 	struct sky1_pcie *pcie = container_of(work, struct sky1_pcie,
@@ -2306,6 +2414,83 @@ err_ecam_free:
 		atomic_set(&phy_rst_assert_cnt, 0);
 	}
 	sky1_pcie_set_refclk(pcie, false);
+}
+
+static bool sky1_pcie_rebar_match(const struct pcie_rebar_rule *rule,
+				  struct pci_dev *dev)
+{
+	return rule->domain == (u16)pci_domain_nr(dev->bus) &&
+	       rule->bus == (u8)dev->bus->number &&
+	       rule->slot == (u8)PCI_SLOT(dev->devfn) &&
+	       rule->func == (u8)PCI_FUNC(dev->devfn);
+}
+
+static void sky1_pcie_rebar_fixup(struct pci_dev *dev)
+{
+	int i, ret;
+	u32 sizes;
+	u64 bytes;
+	struct resource *res;
+
+	if (!pci_find_host_bridge(dev->bus))
+		return;
+
+	for (i = 0; i < pcie_rebar_rules_cnt; i++) {
+		struct pcie_rebar_rule *rule = &pcie_rebar_rules[i];
+
+		if (!sky1_pcie_rebar_match(rule, dev))
+			continue;
+
+		sizes = pci_rebar_get_possible_sizes(dev, rule->bar);
+		if (!sizes) {
+			pci_info(dev, "REBAR: no resizable BAR support, skipping\n");
+			continue;
+		}
+		if (!(sizes & BIT(rule->size_bit))) {
+			pci_info(dev, "REBAR BAR%d: size_bit %d not supported (avail 0x%x)\n",
+				 rule->bar, rule->size_bit, sizes);
+			continue;
+		}
+
+		ret = pci_rebar_set_size(dev, rule->bar, rule->size_bit);
+		if (ret) {
+			pci_info(dev, "REBAR BAR%d: set size_bit %d failed: %d\n",
+				 rule->bar, rule->size_bit, ret);
+			continue;
+		}
+
+		/*
+		 * BAR sizing was read during scan. Since we change ReBAR here
+		 * before resource assignment, also update the cached resource
+		 * length so bridge sizing/assignment uses the new value.
+		 */
+		bytes = pci_rebar_size_to_bytes(rule->size_bit);
+		res = &dev->resource[rule->bar];
+		res->start = 0;
+		res->end = bytes - 1;
+		res->flags |= IORESOURCE_UNSET;
+
+		pci_info(dev, "REBAR BAR%d set to size_bit %d (%#llx bytes)\n",
+			 rule->bar, rule->size_bit, bytes);
+	}
+}
+
+static int sky1_pcie_rebar_walk_apply(struct pci_dev *dev, void *data)
+{
+	(void)data;
+	sky1_pcie_rebar_fixup(dev);
+	return 0;
+}
+
+static int sky1_pcie_bar_resize(struct cdns_pcie_rc *rc)
+{
+	struct pci_host_bridge *bridge = pci_host_bridge_from_priv(rc);
+
+	if (!pcie_rebar_rules_cnt || !bridge || !bridge->bus)
+		return 0;
+
+	pci_walk_bus(bridge->bus, sky1_pcie_rebar_walk_apply, NULL);
+	return 0;
 }
 
 static int sky1_pcie_probe(struct platform_device *pdev)
@@ -2394,6 +2579,7 @@ static int sky1_pcie_probe(struct platform_device *pdev)
 	rc->id = pcie->id;
 	rc->cfg_base = pcie->cfg->win;
 	rc->cfg_res = &pcie->cfg->res;
+	rc->bar_resize = sky1_pcie_bar_resize;
 
 	cdns_pcie = &rc->pcie;
 	cdns_pcie->dev = dev;

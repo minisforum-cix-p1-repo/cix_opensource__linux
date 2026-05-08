@@ -611,6 +611,40 @@ static int cdns_pcie_host_init(struct device *dev,
 	return cdns_pcie_host_init_address_translation(rc);
 }
 
+static int cdns_pcie_host_probe(struct cdns_pcie_rc *rc,
+				struct pci_host_bridge *bridge)
+{
+	struct device *dev = rc->pcie.dev;
+	struct pci_bus *bus, *child;
+	int ret;
+
+	ret = pci_scan_root_bus_bridge(bridge);
+	if (ret < 0) {
+		dev_err(dev, "Scanning root bridge failed\n");
+		return ret;
+	}
+
+	if (rc->bar_resize) {
+		ret = rc->bar_resize(rc);
+		if (ret)
+			return ret;
+	}
+
+	bus = bridge->bus;
+	if (pci_has_flag(PCI_PROBE_ONLY)) {
+		pci_bus_claim_resources(bus);
+	} else {
+		pci_bus_size_bridges(bus);
+		pci_bus_assign_resources(bus);
+
+		list_for_each_entry(child, &bus->children, node)
+			pcie_bus_configure_settings(child);
+	}
+
+	pci_bus_add_devices(bus);
+	return 0;
+}
+
 int cdns_pcie_host_setup(struct cdns_pcie_rc *rc)
 {
 	struct device *dev = rc->pcie.dev;
@@ -678,7 +712,8 @@ int cdns_pcie_host_setup(struct cdns_pcie_rc *rc)
 
 	if (!bridge->ops)
 		bridge->ops = &cdns_pcie_host_ops;
-	ret = pci_host_probe(bridge);
+
+	ret = cdns_pcie_host_probe(rc, bridge);
 	if (ret < 0) {
 		dev_err(dev, "pci_host_probe error\n");
 		goto err_link;
